@@ -7,12 +7,13 @@ import { Button } from '../components/ui/Button';
 import { Avatar } from '../components/ui/Avatar';
 import { Skeleton } from '../components/ui/Skeleton';
 import {
-    format, startOfMonth, endOfMonth, eachDayOfInterval, getDay
+    format, startOfMonth, endOfMonth, eachDayOfInterval, getDay,
+    addMonths, subMonths
 } from 'date-fns';
 import { parseLocalDate } from '../lib/utils';
 import {
     ArrowLeft, Mail, Phone, FileText, CalendarDays,
-
+    ChevronLeft, ChevronRight,
     Briefcase, Clock, CheckCircle2
 } from 'lucide-react';
 import type { UserProfile, AttendanceLog } from '../types';
@@ -37,8 +38,25 @@ export const EmployeeProfile: React.FC = () => {
     const [completedTasks, setCompletedTasks] = useState<any[]>([]);
     const [leaves, setLeaves] = useState<AttendanceLog[]>([]);
     const [loading, setLoading] = useState(true);
+    const [currentMonth, setCurrentMonth] = useState(new Date());
 
+    // Fetch profile, tasks, leaves once when employee id changes
     useEffect(() => { if (id) fetchEmployee(); }, [id]);
+
+    // Fetch attendance separately whenever month changes
+    useEffect(() => { if (id) fetchAttendance(); }, [id, currentMonth]);
+
+    const fetchAttendance = async () => {
+        const start = format(startOfMonth(currentMonth), 'yyyy-MM-dd');
+        const end = format(endOfMonth(currentMonth), 'yyyy-MM-dd');
+        const { data: attData } = await supabase
+            .from('attendance_logs')
+            .select('*')
+            .eq('user_id', id)
+            .gte('date', start)
+            .lte('date', end);
+        setAttendance(attData || []);
+    };
 
     const fetchEmployee = async () => {
         setLoading(true);
@@ -47,17 +65,8 @@ export const EmployeeProfile: React.FC = () => {
             const { data: profileData } = await supabase.from('profiles').select('*').eq('id', id).single();
             setEmp(profileData);
 
-            // Attendance for current month
-            const now = new Date();
-            const start = format(startOfMonth(now), 'yyyy-MM-dd');
-            const end = format(endOfMonth(now), 'yyyy-MM-dd');
-            const { data: attData } = await supabase
-                .from('attendance_logs')
-                .select('*')
-                .eq('user_id', id)
-                .gte('date', start)
-                .lte('date', end);
-            setAttendance(attData || []);
+            // Attendance for selected month
+            await fetchAttendance();
 
             // Active tasks
             const { data: taskData } = await supabase
@@ -126,9 +135,8 @@ export const EmployeeProfile: React.FC = () => {
     );
 
     // Heatmap calendar
-    const now = new Date();
-    const monthStart = startOfMonth(now);
-    const monthEnd = endOfMonth(now);
+    const monthStart = startOfMonth(currentMonth);
+    const monthEnd = endOfMonth(currentMonth);
     const days = eachDayOfInterval({ start: monthStart, end: monthEnd });
     const startDayOfWeek = getDay(monthStart);
 
@@ -191,11 +199,25 @@ export const EmployeeProfile: React.FC = () => {
             {/* Attendance Heatmap */}
             <Card>
                 <CardHeader>
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                        <CardTitle className="flex items-center gap-2">
-                            <CalendarDays className="w-5 h-5 text-accent-primary" />
-                            Attendance — {format(now, 'MMMM yyyy')}
-                        </CardTitle>
+                    <div className="flex flex-col gap-4">
+                        <div className="flex items-center justify-between">
+                            <button
+                                onClick={() => setCurrentMonth(subMonths(currentMonth, 1))}
+                                className="p-2 rounded-xl hover:bg-surface-hover text-text-muted hover:text-text-primary transition-colors"
+                            >
+                                <ChevronLeft className="w-5 h-5" />
+                            </button>
+                            <CardTitle className="flex items-center gap-2">
+                                <CalendarDays className="w-5 h-5 text-accent-primary" />
+                                Attendance — {format(currentMonth, 'MMMM yyyy')}
+                            </CardTitle>
+                            <button
+                                onClick={() => setCurrentMonth(addMonths(currentMonth, 1))}
+                                className="p-2 rounded-xl hover:bg-surface-hover text-text-muted hover:text-text-primary transition-colors"
+                            >
+                                <ChevronRight className="w-5 h-5" />
+                            </button>
+                        </div>
 
                         {/* Legend */}
                         <div className="flex flex-wrap gap-3">
