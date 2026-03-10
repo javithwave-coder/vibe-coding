@@ -118,6 +118,7 @@ const WorkerDashboard: React.FC = () => {
 
     const handleCompleteTask = async (taskId: string) => {
         if (!user) return;
+        if (!window.confirm("Are you sure you want to mark this task as done?")) return;
 
         // Optimistic update
         const taskToUpdate = tasks.find(t => t.id === taskId);

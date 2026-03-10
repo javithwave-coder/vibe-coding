@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import type { Project, ProjectTask, UserProfile, TaskStage } from '../types';
@@ -9,8 +9,8 @@ import { Avatar } from '../components/ui/Avatar';
 import { MultiSelect } from '../components/ui/MultiSelect';
 import { format } from 'date-fns';
 import {
-    Loader2, CheckCircle2, Circle, Save, ArrowLeft,
-    FileText, Calendar, Users, Clock, CheckCheck
+    Loader2, CheckCircle2, Circle, Check, ArrowLeft,
+    FileText, Calendar, Users, Clock, CheckCheck, MessageSquare, Copy
 } from 'lucide-react';
 import { useAuth } from '../lib/AuthContext';
 import { parseDateRange } from '../lib/dateParsing';
@@ -346,9 +346,45 @@ export const ProjectDetails: React.FC = () => {
                     <h2 className="text-lg font-bold text-text-primary flex items-center gap-2">
                         {maxDays > 1 ? `Day ${activeDay} Workflow` : 'Project Workflow'}
                     </h2>
-                    <span className="text-xs font-medium text-text-muted bg-surface-hover px-2 py-1 rounded-lg">
-                        {dayProgress}% Complete
-                    </span>
+                    <div className="flex items-center gap-3">
+                        {isAdmin && (
+                            <button
+                                onClick={() => {
+                                    let msg = `*Project Name:* ${project?.name || 'Unknown'}\n*Day ${activeDay}*\n\n`;
+                                    let hasTasks = false;
+                                    STAGES.forEach(stage => {
+                                        const stageTask = currentDayTasks.find(t => t.stage_name === stage);
+                                        if (stageTask && stageTask.assigned_to && stageTask.assigned_to.length > 0) {
+                                            hasTasks = true;
+                                            msg += `*Task Stage:* ${stage}\n`;
+                                            if (stageTask.admin_note) msg += `_General Brief:_ ${stageTask.admin_note}\n`;
+                                            stageTask.assigned_to.forEach(uid => {
+                                                const user = profiles.find(p => p.id === uid);
+                                                if (user) {
+                                                    const specific = stageTask.worker_notes?.[uid] || '';
+                                                    msg += `- *${user.full_name}:* ${specific || 'No specific instructions.'}\n`;
+                                                }
+                                            });
+                                            msg += '\n';
+                                        }
+                                    });
+                                    if (!hasTasks) {
+                                        alert("No tasks assigned for this day yet.");
+                                        return;
+                                    }
+                                    navigator.clipboard.writeText(msg);
+                                    alert("Daily brief copied to clipboard! You can paste this in your team WhatsApp group.");
+                                }}
+                                className="flex items-center gap-1.5 text-xs font-semibold text-accent-primary bg-accent-primary/10 hover:bg-accent-primary/20 px-3 py-1.5 rounded-lg transition-colors"
+                            >
+                                <Copy className="w-3.5 h-3.5" />
+                                Copy Brief for WhatsApp
+                            </button>
+                        )}
+                        <span className="text-xs font-medium text-text-muted bg-surface-hover px-2 py-1 rounded-lg">
+                            {dayProgress}% Complete
+                        </span>
+                    </div>
                 </div>
 
                 <div className="flex items-center gap-1 overflow-x-auto pb-4 pt-1 no-scrollbar">
@@ -377,14 +413,16 @@ export const ProjectDetails: React.FC = () => {
 
             {/* Stage Cards Grid */}
             <div className="grid gap-4">
-                {STAGES.map((stage) => {
+                {STAGES.map((stage, i) => {
                     const task = currentDayTasks.find(t => t.stage_name === stage);
                     return (
                         <StageCard
                             key={`${activeDay}-${stage}`}
                             stage={stage}
+                            index={i}
                             task={task}
                             day={activeDay}
+                            projectName={project?.name || 'Unknown Project'}
                             isAdmin={isAdmin || false}
                             profiles={profiles}
                             currentUserId={profile?.id}
@@ -402,38 +440,100 @@ export const ProjectDetails: React.FC = () => {
 // ═══════════════════════════════════════════════════
 interface StageCardProps {
     stage: TaskStage;
+    index: number;
     task?: ProjectTask;
     day: number;
+    projectName: string;
     isAdmin: boolean;
     profiles: UserProfile[];
     currentUserId?: string;
     onUpdate: (updates: Partial<ProjectTask>) => void;
 }
 
-const StageCard: React.FC<StageCardProps> = ({ stage, task, day, isAdmin, profiles, currentUserId, onUpdate }) => {
+const StageCard: React.FC<StageCardProps> = ({ stage, index, task, day, projectName, isAdmin, profiles, currentUserId, onUpdate }) => {
     const isCompleted = task?.status === 'completed';
-    // const isAssignedToMe = task?.assigned_to?.includes(currentUserId || ''); // Unused in new logic if not admin? No, used for view mode
     const iMarkedDone = task?.completed_by_workers?.includes(currentUserId || '') || false;
 
     // Local state for admin inputs
     const [note, setNote] = useState(task?.admin_note || '');
     const [assignedIds, setAssignedIds] = useState<string[]>(task?.assigned_to || []);
     const [workerNotes, setWorkerNotes] = useState<Record<string, string>>(task?.worker_notes || {});
+    const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
+    const saveTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+    const isInitialMount = useRef(true);
 
     // Sync state when task changes (e.g. switching days)
     useEffect(() => {
+        isInitialMount.current = true;
         setNote(task?.admin_note || '');
         setAssignedIds(task?.assigned_to || []);
         setWorkerNotes(task?.worker_notes || {});
+        setSaveStatus('idle');
     }, [task]);
 
-    const handleSaveAssignment = () => {
+    // Auto-save helper with status indicator
+    const doSave = useCallback((ids: string[], noteVal: string, wNotes: Record<string, string>) => {
+        setSaveStatus('saving');
         onUpdate({
-            assigned_to: assignedIds,
-            admin_note: note,
-            worker_notes: workerNotes,
+            assigned_to: ids,
+            admin_note: noteVal,
+            worker_notes: wNotes,
             day_number: day
         });
+        // Show "Saved" briefly
+        if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+        saveTimeoutRef.current = setTimeout(() => {
+            setSaveStatus('saved');
+            saveTimeoutRef.current = setTimeout(() => setSaveStatus('idle'), 2000);
+        }, 300);
+    }, [onUpdate, day]);
+
+    // Auto-save when worker selection changes
+    useEffect(() => {
+        if (isInitialMount.current) {
+            isInitialMount.current = false;
+            return;
+        }
+        doSave(assignedIds, note, workerNotes);
+    }, [assignedIds]);
+
+    // Save on note blur
+    const handleNoteBlur = () => {
+        if (note !== (task?.admin_note || '')) {
+            doSave(assignedIds, note, workerNotes);
+        }
+    };
+
+    // Save on worker note blur
+    const handleWorkerNoteBlur = (uid: string) => {
+        if ((workerNotes[uid] || '') !== (task?.worker_notes?.[uid] || '')) {
+            doSave(assignedIds, note, workerNotes);
+        }
+    };
+
+    // WhatsApp Notification Helper
+    const handleNotifyWhatsApp = (uid: string) => {
+        const user = profiles.find(p => p.id === uid);
+        if (!user || !user.phone) {
+            alert(`No phone number found for ${user?.full_name || 'this user'}.`);
+            return;
+        }
+
+        const taskNote = workerNotes[uid] || note || 'No specific instructions.';
+
+        const message = `Hey ${user.full_name},\n\nProject Name: ${projectName}\nDay: Day ${day}\nTask Stage: ${stage}\nSpecific Brief: ${taskNote}`;
+        const encodedMessage = encodeURIComponent(message);
+
+        let phone = user.phone.replace(/[^0-9\+]/g, '');
+        if (!phone.startsWith('+')) {
+            // Assuming default country code if missing, e.g., +94 for Sri Lanka or +91 for India
+            // For now, prepending '+' to make it international format compliant if it's missing but has country code.
+            // If it starts with 0 (like 077), we should ideally replace 0 with +94 in Sri Lanka context, but let's keep it simple or default to just wa.me/phone.
+            // WhatsApp Web often handles raw numbers reasonably well if they include country code, but let's just make sure it's digits.
+            phone = phone.replace(/^0/, '94'); // Example Sri Lanka default, change if needed, but WhatsApp WA.me needs country code.
+        }
+
+        window.open(`https://wa.me/${phone.replace('+', '')}?text=${encodedMessage}`, '_blank');
     };
 
     const handleToggleComplete = () => {
@@ -477,8 +577,11 @@ const StageCard: React.FC<StageCardProps> = ({ stage, task, day, isAdmin, profil
     // --- ADMIN VIEW ---
     if (isAdmin) {
         return (
-            <Card className={`group transition-all duration-300 border-l-4 
-                ${isCompleted ? 'border-l-emerald-500 bg-emerald-500/[0.02]' : 'border-l-accent-primary bg-surface-card'}`}>
+            <Card
+                className={`group transition-all duration-300 border-l-4 relative
+                ${isCompleted ? 'border-l-emerald-500 bg-emerald-500/[0.02]' : 'border-l-accent-primary bg-surface-card'}`}
+                style={{ zIndex: 50 - index }}
+            >
                 <CardContent className="p-5">
                     {/* Header */}
                     <div className="flex items-center justify-between mb-4 pb-4 border-b border-border-default/40">
@@ -501,9 +604,14 @@ const StageCard: React.FC<StageCardProps> = ({ stage, task, day, isAdmin, profil
                                 </div>
                             </div>
                         </div>
-                        <Button size="sm" onClick={handleSaveAssignment} className="shadow-lg shadow-accent-primary/20">
-                            <Save className="w-4 h-4 mr-2" /> Save Changes
-                        </Button>
+                        <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-300
+                            ${saveStatus === 'saving' ? 'text-amber-400 bg-amber-500/10' :
+                                saveStatus === 'saved' ? 'text-emerald-400 bg-emerald-500/10' :
+                                    'text-text-muted/40'}`}>
+                            {saveStatus === 'saving' && <Loader2 className="w-3 h-3 animate-spin" />}
+                            {saveStatus === 'saved' && <Check className="w-3.5 h-3.5" />}
+                            {saveStatus === 'saving' ? 'Saving...' : saveStatus === 'saved' ? 'Saved' : 'Auto-save on'}
+                        </div>
                     </div>
 
                     {/* Admin Grid Layout */}
@@ -530,6 +638,7 @@ const StageCard: React.FC<StageCardProps> = ({ stage, task, day, isAdmin, profil
                                     rows={3}
                                     value={note}
                                     onChange={(e) => setNote(e.target.value)}
+                                    onBlur={handleNoteBlur}
                                     placeholder="Instructions for the whole team..."
                                 />
                             </div>
@@ -560,7 +669,16 @@ const StageCard: React.FC<StageCardProps> = ({ stage, task, day, isAdmin, profil
                                                     <Avatar name={user.full_name} size="sm" className="mt-0.5 border border-border-default" />
                                                     <div className="flex-1 space-y-1">
                                                         <div className="flex items-center justify-between">
-                                                            <span className="text-xs font-semibold text-text-primary">{user.full_name}</span>
+                                                            <div className="flex items-center gap-2">
+                                                                <span className="text-xs font-semibold text-text-primary">{user.full_name}</span>
+                                                                <button
+                                                                    onClick={() => handleNotifyWhatsApp(uid)}
+                                                                    className="text-text-muted hover:text-[#25D366] transition-colors p-1 rounded-md hover:bg-[#25D366]/10 outline-none focus:bg-[#25D366]/10"
+                                                                    title="Notify via WhatsApp"
+                                                                >
+                                                                    <MessageSquare className="w-3.5 h-3.5" />
+                                                                </button>
+                                                            </div>
                                                             {hasCompleted && <span className="text-[10px] text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded">DONE</span>}
                                                         </div>
                                                         <textarea
@@ -569,6 +687,7 @@ const StageCard: React.FC<StageCardProps> = ({ stage, task, day, isAdmin, profil
                                                             placeholder={`Specific task for ${user.full_name.split(' ')[0]}...`}
                                                             value={workerNotes[uid] || ''}
                                                             onChange={(e) => setWorkerNotes(prev => ({ ...prev, [uid]: e.target.value }))}
+                                                            onBlur={() => handleWorkerNoteBlur(uid)}
                                                         />
                                                     </div>
                                                 </div>
@@ -607,8 +726,11 @@ const StageCard: React.FC<StageCardProps> = ({ stage, task, day, isAdmin, profil
     const myNote = currentUserId ? task?.worker_notes?.[currentUserId] : null;
 
     return (
-        <Card className={`border-l-4 transition-all duration-300 
-            ${isCompleted ? 'border-l-emerald-500 bg-emerald-500/[0.02]' : 'border-l-accent-primary bg-surface-card'}`}>
+        <Card
+            className={`border-l-4 transition-all duration-300 relative
+            ${isCompleted ? 'border-l-emerald-500 bg-emerald-500/[0.02]' : 'border-l-accent-primary bg-surface-card'}`}
+            style={{ zIndex: 50 - index }}
+        >
             <CardContent className="p-6">
                 <div className="flex flex-col md:flex-row gap-8">
 

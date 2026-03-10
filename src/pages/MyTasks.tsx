@@ -50,6 +50,7 @@ export const Tasks: React.FC = () => {
 
     const handleComplete = async (taskId: string) => {
         if (!user) return;
+        if (!window.confirm("Are you sure you want to mark this task as done?")) return;
         const task = tasks.find(t => t.id === taskId);
         if (!task) return;
 
