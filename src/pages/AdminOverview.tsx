@@ -5,11 +5,7 @@ import { Avatar } from '../components/ui/Avatar';
 import { Skeleton } from '../components/ui/Skeleton';
 import { supabase } from '../lib/supabase';
 import {
-    BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer,
-    Legend
-} from 'recharts';
-import {
-    Briefcase, Calendar, CheckCircle2,
+    Briefcase, Calendar, CheckCircle2, Clock, CheckCircle
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { useNavigate } from 'react-router-dom';
@@ -93,11 +89,30 @@ export const AdminOverview: React.FC = () => {
                         }
                     });
 
+                    const STAGES = ['Sorting', 'Selection', 'Cropping', 'Coloring', 'Pixieset'];
+
+                    // All assigned tasks for this project
+                    const assignedTasks = pTasks.filter(t => t.assigned_to && t.assigned_to.length > 0);
+                    const sortedAssignedTasks = [...assignedTasks].sort((a, b) => {
+                        const stageA = STAGES.indexOf(a.stage_name);
+                        const stageB = STAGES.indexOf(b.stage_name);
+                        if (stageA !== stageB) return stageA - stageB;
+                        return (a.day_number || 0) - (b.day_number || 0);
+                    });
+
+                    const sortedPending = [...pendingTasksArr].sort((a, b) => {
+                        const stageA = STAGES.indexOf(a.stage_name);
+                        const stageB = STAGES.indexOf(b.stage_name);
+                        if (stageA !== stageB) return stageA - stageB;
+                        return (a.day_number || 0) - (b.day_number || 0);
+                    });
+
                     return {
                         ...p, totalTasks: total, completedTasks: completed, progress,
                         assigneeIds: Array.from(assigneeIds),
-                        currentStage: pTasks.find(t => t.status === 'pending')?.stage_name || 'Completed',
-                        pendingByWorker
+                        currentStage: sortedPending.length > 0 ? sortedPending[0].stage_name : 'Completed',
+                        pendingByWorker,
+                        activeTasksList: sortedAssignedTasks
                     };
                 });
 
@@ -135,45 +150,8 @@ export const AdminOverview: React.FC = () => {
     const officeStaff = todayAttendance.filter(a => a.status_type === 'office' || a.status_type === 'weekend_work' || a.status_type === 'working_day');
     const onLeave = todayAttendance.filter(a => a.is_leave_request && a.leave_status === 'approved');
 
-    // Color Palette for Workers
-    const COLORS = ['#6366f1', '#a855f7', '#ec4899', '#14b8a6', '#f59e0b', '#06b6d4', '#8b5cf6'];
-    const getWorkerColor = (index: number) => COLORS[index % COLORS.length];
-
-    // Prepare chart data: Y=Project, X=Tasks (Stack: Completed + Worker A Pending + Worker B Pending...)
-    const projectChartData = chartProjects.map(p => {
-        const item: any = {
-            name: p.name.length > 20 ? p.name.substring(0, 20) + '...' : p.name,
-            completed: p.completedTasks,
-            isCompleted: p.status === 'completed' // Flag for potential styling if needed
-        };
-        // Add worker specific PENDING counts
-        Object.entries(p.pendingByWorker || {}).forEach(([workerId, count]) => {
-            if (workerId === 'unassigned') return;
-            const worker = employees.find(e => e.id === workerId);
-            const key = worker ? worker.full_name.split(' ')[0] : 'Unknown';
-            item[key] = (item[key] || 0) + (count as number);
-        });
-        return item;
-    });
-
-    // Identify all unique workers occurring in the data for Legend and Bar generation
-    // Exclude 'isCompleted' from keys
-    const allWorkers = Array.from(new Set(
-        projectChartData.flatMap(item => Object.keys(item).filter(k => k !== 'name' && k !== 'completed' && k !== 'unassigned' && k !== 'isCompleted'))
-    ));
-
-    const chartTooltipStyle = {
-        contentStyle: {
-            borderRadius: '12px',
-            border: '1px solid rgba(255,255,255,0.06)',
-            background: 'rgba(18,18,26,0.95)',
-            backdropFilter: 'blur(12px)',
-            color: '#f1f5f9',
-            boxShadow: '0 8px 30px rgba(0,0,0,0.4)',
-        },
-        itemStyle: { color: '#94a3b8' },
-        labelStyle: { color: '#f1f5f9', fontWeight: 600 },
-    };
+    // Filter to only show active projects in the heavy details widget
+    const activeDetailedProjects = chartProjects.filter((p: any) => p.status !== 'completed');
 
     return (
         <div className="space-y-8 animate-fade-in max-w-7xl mx-auto">
@@ -275,59 +253,105 @@ export const AdminOverview: React.FC = () => {
                 <CardHeader>
                     <CardTitle className="flex items-center gap-2">
                         <Briefcase className="w-5 h-5 text-accent-primary" />
-                        Active Assignments & Progress
+                        Live Operations Breakdown
                     </CardTitle>
                     <p className="text-xs text-text-muted">
-                        Real-time view of projects assigned to workers.
-                        <span className="inline-block w-2 h-2 rounded-full bg-surface-hover ml-2 mr-1" /> Completed
-                        <span className="inline-block w-2 h-2 rounded-full bg-indigo-500 ml-2 mr-1" /> Pending (Worker)
+                        Real-time detailed view of active projects, assigned stages, and worker progress.
                     </p>
                 </CardHeader>
                 <CardContent>
-                    <div className="h-[400px] w-full mt-2">
-                        {projectChartData.length > 0 ? (
-                            <ResponsiveContainer width="100%" height="100%">
-                                <BarChart layout="vertical" data={projectChartData} barSize={24} margin={{ left: 10, right: 30 }}>
-                                    <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={true} stroke="rgba(255,255,255,0.03)" />
-                                    <XAxis type="number" hide />
-                                    <YAxis dataKey="name" type="category" width={140} tick={{ fontSize: 13, fill: '#cbd5e1', fontWeight: 500 }} />
-                                    <RechartsTooltip cursor={{ fill: 'rgba(255,255,255,0.02)' }} {...chartTooltipStyle} />
-                                    <Legend wrapperStyle={{ color: '#94a3b8', paddingTop: '20px' }} iconType="circle" />
+                    <div className="space-y-4 max-h-[600px] overflow-y-auto pr-2 no-scrollbar">
+                        {activeDetailedProjects.length > 0 ? (
+                            activeDetailedProjects.map((project: any) => (
+                                <div key={project.id} className="p-4 rounded-xl border border-border-default bg-surface-hover/30 hover:bg-surface-hover/50 transition-colors">
+                                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4 border-b border-border-default/50 pb-3">
+                                        <div>
+                                            <h3 className="font-bold text-text-primary text-base cursor-pointer hover:text-accent-primary transition-colors" onClick={() => navigate(`/projects/${project.id}`)}>
+                                                {project.name}
+                                            </h3>
+                                            <p className="text-xs text-text-muted mt-1">
+                                                {project.totalTasks} Total Tasks • {new Date(project.date).toLocaleDateString()}
+                                            </p>
+                                        </div>
+                                        <div className="flex items-center gap-3 w-full sm:w-1/3">
+                                            <div className="w-full bg-surface-ground rounded-full h-2 overflow-hidden">
+                                                <div
+                                                    className="bg-gradient-brand h-full transition-all duration-500"
+                                                    style={{ width: `${project.progress}%` }}
+                                                />
+                                            </div>
+                                            <span className="text-xs font-bold text-text-primary">{project.progress}%</span>
+                                        </div>
+                                    </div>
 
-                                    {/* Completed Tasks (Base Layer) */}
-                                    <Bar dataKey="completed" stackId="a" fill="#3f3f46" name="Done" radius={[0, 0, 0, 0]} />
+                                    {project.activeTasksList && project.activeTasksList.length > 0 ? (
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                            {project.activeTasksList.map((task: any) => (
+                                                <div key={task.id} className="flex flex-col p-3 rounded-lg bg-surface-card border border-border-default/40">
+                                                    <div className="flex items-center justify-between mb-2">
+                                                        <div className="flex items-center gap-2">
+                                                            <Badge variant={task.status === 'completed' ? 'success' : 'default'} className="uppercase text-[10px] tracking-wider">
+                                                                {task.stage_name}
+                                                            </Badge>
+                                                            {task.day_number && <span className="text-[10px] text-text-muted font-medium bg-surface-elevated px-1.5 py-0.5 rounded">Day {task.day_number}</span>}
+                                                        </div>
+                                                        {task.status === 'completed' ? (
+                                                            <CheckCircle className="w-4 h-4 text-emerald-400" />
+                                                        ) : (
+                                                            <Clock className="w-4 h-4 text-amber-500/80 animate-pulse-soft" />
+                                                        )}
+                                                    </div>
 
-                                    {/* Pending Tasks by Worker (Active Layer) */}
-                                    {allWorkers.map((workerName, index) => (
-                                        <Bar
-                                            key={workerName}
-                                            dataKey={workerName}
-                                            stackId="a"
-                                            fill={getWorkerColor(index)}
-                                            radius={[0, 2, 2, 0]}
-                                        />
-                                    ))}
-                                </BarChart>
-                            </ResponsiveContainer>
+                                                    <div className="flex flex-col gap-1.5 mt-1">
+                                                        {task.assigned_to.map((uid: string) => {
+                                                            const emp = employees.find(e => e.id === uid);
+                                                            if (!emp) return null;
+                                                            const isDone = task.completed_by_workers?.includes(uid);
+                                                            return (
+                                                                <div key={uid} className="flex items-center justify-between bg-surface-ground/50 px-2 py-1.5 rounded-md">
+                                                                    <div className="flex items-center gap-2">
+                                                                        <Avatar name={emp.full_name} src={emp.avatar_url} size="sm" className="w-5 h-5" />
+                                                                        <span className="text-xs font-medium text-text-secondary">{emp.full_name.split(' ')[0]}</span>
+                                                                    </div>
+                                                                    {isDone ? (
+                                                                        <span className="text-[10px] font-bold text-emerald-400 flex items-center gap-1">
+                                                                            <CheckCircle2 className="w-3 h-3" /> Done
+                                                                        </span>
+                                                                    ) : (
+                                                                        <span className="text-[10px] font-medium text-amber-500/70">
+                                                                            Pending
+                                                                        </span>
+                                                                    )}
+                                                                </div>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        <p className="text-xs text-text-muted italic py-2">No stages currently assigned to workers.</p>
+                                    )}
+                                </div>
+                            ))
                         ) : (
-                            <div className="h-full flex flex-col items-center justify-center text-text-muted">
-                                <Briefcase className="w-12 h-12 mb-3 opacity-10" />
-                                <p>No active assignments.</p>
-                                <p className="text-xs mt-1 opacity-50">Assign tasks to workers to see them here.</p>
+                            <div className="h-40 flex flex-col items-center justify-center text-text-muted border-2 border-dashed border-border-default rounded-xl">
+                                <Briefcase className="w-10 h-10 mb-2 opacity-20" />
+                                <p className="text-sm">No active assignments.</p>
                             </div>
                         )}
                     </div>
                 </CardContent>
             </Card>
 
-            {/* Active Project Cards Grid */}
+            {/* Recently Completed Projects Grid */}
             <div>
-                <h2 className="text-xl font-bold text-text-primary mb-4">Active Project Details</h2>
+                <h2 className="text-xl font-bold text-text-primary mb-4">Recently Completed Projects</h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-                    {chartProjects.filter((p: any) => p.status !== 'completed').map((project: any, i) => (
+                    {chartProjects.filter((p: any) => p.status === 'completed').map((project: any, i) => (
                         <Card
                             key={project.id}
-                            className="hover:glow-sm transition-all duration-300 cursor-pointer animate-fade-in"
+                            className="hover:glow-sm transition-all duration-300 cursor-pointer animate-fade-in opacity-80"
                             style={{ animationDelay: `${i * 0.05}s` }}
                             onClick={() => navigate(`/projects/${project.id}`)}
                         >
@@ -335,47 +359,33 @@ export const AdminOverview: React.FC = () => {
                                 <div className="flex justify-between items-start mb-4">
                                     <div>
                                         <h3 className="font-bold text-text-primary text-lg">{project.name}</h3>
-                                        <p className="text-xs text-text-muted mt-0.5">{project.totalTasks} tasks • {project.assigneeIds.length} workers</p>
+                                        <p className="text-xs text-text-muted mt-0.5">{project.totalTasks} tasks • {new Date(project.date).toLocaleDateString()}</p>
                                     </div>
-                                    <Badge variant={project.progress === 100 ? 'success' : 'default'}>
-                                        {project.progress}%
-                                    </Badge>
+                                    <Badge variant="success">Done</Badge>
                                 </div>
 
-                                {/* Progress Bar */}
+                                {/* Progress Bar is 100% */}
                                 <div className="w-full bg-surface-ground rounded-full h-2.5 mb-4 overflow-hidden">
-                                    <div
-                                        className="bg-gradient-brand h-full transition-all duration-500"
-                                        style={{ width: `${project.progress}%` }}
-                                    />
+                                    <div className="bg-emerald-500 h-full w-full" />
                                 </div>
 
                                 <div className="flex justify-between items-end">
-                                    <div>
-                                        <p className="text-[10px] text-text-muted uppercase font-semibold mb-1">Current Stage</p>
-                                        <Badge variant="secondary" className="bg-surface-elevated border-border-default">{project.currentStage}</Badge>
-                                    </div>
                                     <div className="flex -space-x-2">
-                                        {project.assigneeIds.slice(0, 3).map((uid: string) => {
+                                        {project.assigneeIds.slice(0, 5).map((uid: string) => {
                                             const user = employees.find(e => e.id === uid);
                                             return user ? (
-                                                <Avatar key={uid} name={user.full_name} size="sm" className="border-2 border-surface-ground" />
+                                                <Avatar key={uid} name={user.full_name} src={user.avatar_url} size="sm" className="border-2 border-surface-ground" />
                                             ) : null;
                                         })}
-                                        {project.assigneeIds.length > 3 && (
-                                            <div className="w-8 h-8 rounded-full bg-surface-hover border-2 border-surface-ground flex items-center justify-center text-xs text-text-muted font-medium">
-                                                +{project.assigneeIds.length - 3}
-                                            </div>
-                                        )}
                                     </div>
                                 </div>
                             </CardContent>
                         </Card>
                     ))}
-                    {chartProjects.filter((p: any) => p.status !== 'completed').length === 0 && (
+                    {chartProjects.filter((p: any) => p.status === 'completed').length === 0 && (
                         <div className="col-span-full text-center py-12 text-text-muted border-2 border-dashed border-border-default rounded-2xl">
-                            <Briefcase className="w-8 h-8 mx-auto mb-2 opacity-20" />
-                            <p className="text-sm">No active assigned projects.</p>
+                            <CheckCircle2 className="w-8 h-8 mx-auto mb-2 opacity-20" />
+                            <p className="text-sm">No completed projects yet.</p>
                         </div>
                     )}
                 </div>
